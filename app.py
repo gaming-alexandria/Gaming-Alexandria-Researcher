@@ -1507,10 +1507,15 @@ def download_waterfall(
     for url in sources:
         DOWNLOAD_STATE[task_id]["status"] = f"Downloading {file_type}..."
         DOWNLOAD_STATE[task_id]["progress"] = 0
+        
+        # Cache busting: append a unique timestamp so the server NEVER sends a stale file!
+        cb_param = f"nocache={int(time.time() * 1000)}"
+        busted_url = f"{url}&{cb_param}" if "?" in url else f"{url}?{cb_param}"
+        
         try:
             # Force no-cache so we never get a stale file from the server
             req = urllib.request.Request(
-                url,
+                busted_url,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "Cache-Control": "no-cache",
@@ -1558,16 +1563,29 @@ def download_worker(task_id: str, item: dict) -> None:
         item.get("zip_filename") or f"{Path(pdf_filename).stem}_Data.zip"
     )
 
-    success_pdf = download_waterfall(
-        task_id, pdf_temp, item.get("pdf_sources", []), "PDF"
-    )
+    # --- SMART PDF SKIP ---
+    # Check if the PDF already exists locally in our library
+    existing_rel_path = next((f for f in METADATA_CACHE.keys() if f.endswith(pdf_filename)), None)
+    existing_pdf_path = (DATA_DIR / existing_rel_path) if existing_rel_path else None
+
+    if existing_pdf_path and existing_pdf_path.exists():
+        DOWNLOAD_STATE[task_id]["status"] = "PDF found locally. Skipping download..."
+        # Copy it locally (takes a fraction of a second) so the folder organizer still works
+        shutil.copy2(existing_pdf_path, pdf_temp)
+        success_pdf = True
+    else:
+        success_pdf = download_waterfall(
+            task_id, pdf_temp, item.get("pdf_sources",[]), "PDF"
+        )
+        
     if not success_pdf:
         DOWNLOAD_STATE[task_id]["done"] = True
         return
 
     success_zip = download_waterfall(
-        task_id, zip_temp, item.get("zip_sources", []), "Data ZIP"
+        task_id, zip_temp, item.get("zip_sources",[]), "Data ZIP"
     )
+    
     if not success_zip:
         DOWNLOAD_STATE[task_id]["done"] = True
         return
